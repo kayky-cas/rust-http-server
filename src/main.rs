@@ -41,14 +41,31 @@ fn main() -> anyhow::Result<()> {
                     .read_until(b' ', &mut path)
                     .context("reading path")?;
 
-                let response = match &path[..path.len() - 1] {
-                    b"/" => &b"HTTP/1.1 200 OK\r\n\r\n"[..],
-                    _ => &b"HTTP/1.1 404 Not Found\r\n\r\n"[..],
-                };
+                match &path[..path.len() - 1] {
+                    b"/" => {
+                        stream
+                            .write(b"HTTP/1.1 200 OK\r\n\r\n")
+                            .with_context(|| format!("writing on {:?}", stream))?;
+                    }
+                    path if path.starts_with(b"/echo/") => {
+                        let content = &path[6..];
 
-                stream
-                    .write(response)
-                    .with_context(|| format!("writing on {:?}", stream))?;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n",
+                            content.len(),
+                            std::str::from_utf8(content).context("parsing to UTF-8")?
+                        );
+
+                        stream
+                            .write(response.as_bytes())
+                            .with_context(|| format!("writing on {:?}", stream))?;
+                    }
+                    _ => {
+                        stream
+                            .write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+                            .with_context(|| format!("writing on {:?}", stream))?;
+                    }
+                };
             }
             Err(e) => {
                 println!("error: {}", e);
