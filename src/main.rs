@@ -1,5 +1,8 @@
 // Uncomment this block to pass the first stage
-use std::{io::Write, net::TcpListener};
+use std::{
+    io::{BufRead, BufReader, Write},
+    net::TcpListener,
+};
 
 use anyhow::Context;
 
@@ -15,8 +18,36 @@ fn main() -> anyhow::Result<()> {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
+
+                let mut read_buffer = BufReader::new(&stream);
+                let mut method: Vec<u8> = Vec::new();
+
+                read_buffer
+                    .read_until(b' ', &mut method)
+                    .context("reading method")?;
+
+                let _ = method.pop();
+
+                // match &method[..] {
+                //     b"GET" => {
+                //         println!("Get")
+                //     }
+                //     _ => panic!("oops"),
+                // }
+
+                let mut path = Vec::new();
+
+                read_buffer
+                    .read_until(b' ', &mut path)
+                    .context("reading path")?;
+
+                let response = match &path[..path.len() - 1] {
+                    b"/index.html" => &b"HTTP/1.1 200 OK\r\n\r\n"[..],
+                    _ => &b"HTTP/1.1 404 Not Found\r\n\r\n"[..],
+                };
+
                 stream
-                    .write(b"HTTP/1.1 200 OK\r\n\r\n")
+                    .write(response)
                     .with_context(|| format!("writing on {:?}", stream))?;
             }
             Err(e) => {
