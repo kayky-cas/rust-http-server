@@ -5,7 +5,7 @@ use anyhow::Context;
 use clap::Parser;
 use itertools::Itertools;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use std::path::PathBuf;
 
@@ -47,15 +47,6 @@ async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow:
         .await
         .context("reading method")?;
 
-    let _ = method.pop();
-
-    // match &method[..] {
-    //     b"GET" => {
-    //         println!("Get")
-    //     }
-    //     _ => panic!("oops"),
-    // }
-
     let mut path = Vec::new();
 
     read_buffer
@@ -93,14 +84,30 @@ async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow:
         header.clear();
     }
 
-    match &path[..path.len() - 1] {
-        b"/" => {
+    let content_len = headers
+        .get("Content-Length")
+        .unwrap_or(&"0".to_string())
+        .parse::<usize>()?;
+
+    let content = if content_len > 0 {
+        let mut content = vec![0; content_len];
+        read_buffer
+            .read_exact(&mut content)
+            .await
+            .context("reading content")?;
+        content
+    } else {
+        Vec::new()
+    };
+
+    match (&method[..method.len() - 1], &path[..path.len() - 1]) {
+        (b"GET", b"/") => {
             stream
                 .write(b"HTTP/1.1 200 OK\r\n\r\n")
                 .await
                 .with_context(|| format!("writing on {:?}", stream))?;
         }
-        b"/user-agent" => {
+        (b"GET", b"/user-agent") => {
             let Some(user_agent) = headers.get("User-Agent") else {
                 anyhow::bail!("User-Agent not found")
             };
@@ -116,7 +123,7 @@ async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow:
                 .await
                 .with_context(|| format!("writing on {:?}", stream))?;
         }
-        path if path.starts_with(b"/echo/") => {
+        (b"GET", path) if path.starts_with(b"/echo/") => {
             let content = &path[6..];
 
             let response = format!(
@@ -130,7 +137,7 @@ async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow:
                 .await
                 .with_context(|| format!("writing on {:?}", stream))?;
         }
-        path if path.starts_with(b"/files/") => {
+        (b"GET", path) if path.starts_with(b"/files/") => {
             let file_name = std::str::from_utf8(&path[7..]).context("parsing to UTF-8")?;
 
             let file_path = config
@@ -162,6 +169,28 @@ async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow:
                 .with_context(|| format!("writing on {:?}", stream))?;
 
             tokio::io::copy(&mut file, &mut stream).await?;
+        }
+        (b"POST", path) if path.starts_with(b"/files/") => {
+            let file_name = std::str::from_utf8(&path[7..]).context("parsing to UTF-8")?;
+
+            let file_path = config
+                .directory
+                .as_ref()
+                .map(|d| d.join(file_name))
+                .unwrap();
+
+            let mut file = tokio::fs::File::create(file_path)
+                .await
+                .with_context(|| format!("creating file {:?}", file_name))?;
+
+            file.write_all(&content)
+                .await
+                .with_context(|| format!("writing on {:?}", file))?;
+
+            stream
+                .write(b"HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\n\r\n")
+                .await
+                .with_context(|| format!("writing on {:?}", stream))?;
         }
         _ => {
             stream
