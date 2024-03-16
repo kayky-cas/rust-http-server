@@ -1,10 +1,14 @@
 // Uncomment this block to pass the first stage
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
 };
 
 use anyhow::Context;
+use itertools::Itertools;
+
+type Headers<'a> = HashMap<String, String>;
 
 fn main() -> anyhow::Result<()> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -41,10 +45,53 @@ fn main() -> anyhow::Result<()> {
                     .read_until(b' ', &mut path)
                     .context("reading path")?;
 
+                let mut http_version = Vec::new();
+
+                read_buffer
+                    .read_until(b'\n', &mut http_version)
+                    .context("reading http version")?;
+
+                let mut header = Vec::new();
+                let mut headers: Headers = Headers::default();
+
+                loop {
+                    read_buffer
+                        .read_until(b'\n', &mut header)
+                        .context("reading http version")?;
+
+                    if header != b"\r\n" {
+                        break;
+                    }
+
+                    if let Some((key, value)) = header.split(|&x| x == b':').collect_tuple() {
+                        headers.insert(
+                            String::from_utf8(key.to_vec())?,
+                            String::from_utf8(value.to_vec())?,
+                        );
+                    }
+                }
+
                 match &path[..path.len() - 1] {
                     b"/" => {
                         stream
                             .write(b"HTTP/1.1 200 OK\r\n\r\n")
+                            .with_context(|| format!("writing on {:?}", stream))?;
+                    }
+                    b"/user-agent" => {
+                        let content = &path[6..];
+
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n",
+                            content.len(),
+                            std::str::from_utf8(content).context("parsing to UTF-8")?
+                        );
+
+                        let user_agent = headers
+                            .get("User-Agent")
+                            .ok_or_else(|| anyhow::bail!("User-Agent not found"))?;
+
+                        stream
+                            .write(response.as_bytes())
                             .with_context(|| format!("writing on {:?}", stream))?;
                     }
                     path if path.starts_with(b"/echo/") => {
@@ -60,6 +107,7 @@ fn main() -> anyhow::Result<()> {
                             .write(response.as_bytes())
                             .with_context(|| format!("writing on {:?}", stream))?;
                     }
+
                     _ => {
                         stream
                             .write(b"HTTP/1.1 404 Not Found\r\n\r\n")
