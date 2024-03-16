@@ -59,16 +59,18 @@ fn main() -> anyhow::Result<()> {
                         .read_until(b'\n', &mut header)
                         .context("reading http version")?;
 
-                    if header != b"\r\n" {
+                    if header == b"\r\n" {
                         break;
                     }
 
                     if let Some((key, value)) = header.split(|&x| x == b':').collect_tuple() {
                         headers.insert(
                             String::from_utf8(key.to_vec())?,
-                            String::from_utf8(value.to_vec())?,
+                            String::from_utf8(value[1..value.len() - 2].to_vec())?,
                         );
                     }
+
+                    header.clear();
                 }
 
                 match &path[..path.len() - 1] {
@@ -78,17 +80,15 @@ fn main() -> anyhow::Result<()> {
                             .with_context(|| format!("writing on {:?}", stream))?;
                     }
                     b"/user-agent" => {
-                        let content = &path[6..];
+                        let Some(user_agent) = headers.get("User-Agent") else {
+                            anyhow::bail!("User-Agent not found")
+                        };
 
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n",
-                            content.len(),
-                            std::str::from_utf8(content).context("parsing to UTF-8")?
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                            user_agent.len(),
+                            user_agent
                         );
-
-                        let user_agent = headers
-                            .get("User-Agent")
-                            .ok_or_else(|| anyhow::bail!("User-Agent not found"))?;
 
                         stream
                             .write(response.as_bytes())
@@ -98,7 +98,7 @@ fn main() -> anyhow::Result<()> {
                         let content = &path[6..];
 
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n",
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
                             content.len(),
                             std::str::from_utf8(content).context("parsing to UTF-8")?
                         );
