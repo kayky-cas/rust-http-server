@@ -1,10 +1,18 @@
 // Uncomment this block to pass the first stage
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
+use clap::Parser;
 use itertools::Itertools;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+use std::path::PathBuf;
+
+#[derive(Parser)]
+struct Args {
+    directory: Option<PathBuf>,
+}
 
 type Headers<'a> = HashMap<String, String>;
 
@@ -13,18 +21,21 @@ async fn main() -> anyhow::Result<()> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
+    let config: Arc<_> = Args::parse().into();
+
     // Uncomment this block to pass the first stage
     //
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4221").await?;
 
     loop {
+        let config = config.clone();
         let (stream, _) = listener.accept().await?;
 
-        tokio::spawn(async move { handle(stream).await });
+        tokio::spawn(async move { handle(stream, config).await });
     }
 }
 
-async fn handle(mut stream: tokio::net::TcpStream) -> anyhow::Result<()> {
+async fn handle(mut stream: tokio::net::TcpStream, config: Arc<Args>) -> anyhow::Result<()> {
     println!("accepted new connection");
 
     let mut read_buffer = tokio::io::BufReader::new(&mut stream);
@@ -118,7 +129,39 @@ async fn handle(mut stream: tokio::net::TcpStream) -> anyhow::Result<()> {
                 .await
                 .with_context(|| format!("writing on {:?}", stream))?;
         }
+        path if path.starts_with(b"/files/") => {
+            let file_name = std::str::from_utf8(&path[7..]).context("parsing to UTF-8")?;
 
+            let file_path = config
+                .directory
+                .as_ref()
+                .map(|d| d.join(file_name))
+                .unwrap();
+
+            let Ok(attr) = tokio::fs::metadata(&file_path).await else {
+                stream
+                    .write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+                    .await
+                    .with_context(|| format!("writing on {:?}", stream))?;
+                return Ok(());
+            };
+
+            let mut file = tokio::fs::File::open(file_path)
+                .await
+                .with_context(|| format!("opening file {:?}", file_name))?;
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                attr.len()
+            );
+
+            stream
+                .write(response.as_bytes())
+                .await
+                .with_context(|| format!("writing on {:?}", stream))?;
+
+            tokio::io::copy(&mut file, &mut stream).await?;
+        }
         _ => {
             stream
                 .write(b"HTTP/1.1 404 Not Found\r\n\r\n")
