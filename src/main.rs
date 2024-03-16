@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
+    #[clap(long)]
     directory: Option<PathBuf>,
 }
 
